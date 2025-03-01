@@ -13,7 +13,7 @@ class TestDataGenerator(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.model_name = "llama2"
+        self.model_name = "deepseek-r1"
         
         # Sample form info
         self.form_info = {
@@ -126,33 +126,61 @@ class TestDataGenerator(unittest.TestCase):
         self.assertIn('text', payload['prompt'])
     
     @patch('requests.post')
+    def test_batch_generate_field_data(self, mock_post):
+        """Test the _batch_generate_field_data method."""
+        # Mock successful JSON response from Ollama
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            'response': json.dumps({
+                'name': 'John Doe',
+                'email': 'john.doe@example.com',
+                'phone': '555-123-4567',
+                'message': 'I observed inappropriate DEI training materials being used in the classroom.',
+                'topic': 'general'
+            })
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        generator = DataGenerator(self.model_name)
+        
+        # Get non-honeypot fields
+        fields = [f for f in self.form_info['fields'] if f['name'] != 'honeypot']
+        result = generator._batch_generate_field_data(fields)
+        
+        # Verify the result contains all expected fields
+        self.assertIn('name', result)
+        self.assertIn('email', result)
+        self.assertIn('phone', result)
+        self.assertIn('message', result)
+        self.assertIn('topic', result)
+        
+        # Verify Ollama was called once with all fields in prompt
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        prompt = kwargs['json']['prompt']
+        self.assertIn('name', prompt)
+        self.assertIn('email', prompt)
+        self.assertIn('phone', prompt)
+        self.assertIn('message', prompt)
+        self.assertIn('topic', prompt)
+
+    @patch('requests.post')
     def test_generate_form_data(self, mock_post):
         """Test the generate_form_data method."""
-        # Mock the Ollama API response for different field types
-        responses = {
-            'name': 'John Doe',
-            'email': 'john.doe@example.com',
-            'phone': '555-123-4567',
-            'message': 'I observed inappropriate DEI training materials being used in the classroom.',
-            'topic': 'general'
+        # Mock successful JSON response from Ollama
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            'response': json.dumps({
+                'name': 'John Doe',
+                'email': 'john.doe@example.com',
+                'phone': '555-123-4567',
+                'message': 'I observed inappropriate DEI training materials being used in the classroom.',
+                'topic': 'general'
+            })
         }
-        
-        def mock_post_side_effect(url, json=None, **kwargs):
-            # Extract the field name from the prompt
-            prompt = json['prompt']
-            field_name = None
-            for name in responses.keys():
-                if name in prompt.lower():
-                    field_name = name
-                    break
-            
-            # Create a mock response with the appropriate data
-            mock_resp = MagicMock()
-            mock_resp.json.return_value = {'response': responses.get(field_name, '')}
-            mock_resp.raise_for_status.return_value = None
-            return mock_resp
-        
-        mock_post.side_effect = mock_post_side_effect
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
         
         # Create the generator
         generator = DataGenerator(self.model_name)
@@ -170,8 +198,8 @@ class TestDataGenerator(unittest.TestCase):
         # Check that the honeypot field was left empty
         self.assertEqual(form_data['honeypot'], '')
         
-        # Check that the Ollama API was called the expected number of times
-        self.assertEqual(mock_post.call_count, 5)  # Once for each non-honeypot field
+        # Check that the Ollama API was called exactly once for all fields
+        mock_post.assert_called_once()
     
     def test_process_response(self):
         """Test the _process_response method."""

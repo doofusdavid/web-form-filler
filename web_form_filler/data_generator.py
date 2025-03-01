@@ -41,6 +41,81 @@ class DataGenerator:
         # Process and return the response
         return self._process_response(response, field_info)
     
+    def _batch_generate_field_data(self, fields):
+        """Generate data for multiple fields in a single API call.
+        
+        Args:
+            fields (list): List of field metadata dictionaries.
+            
+        Returns:
+            dict: A dictionary mapping field names to generated values.
+        """
+        # Construct a combined prompt for all fields
+        prompts = []
+        for field in fields:
+            field_name = field['name']
+            field_type = field['type']
+            label = field['label'] or field['placeholder'] or field_name
+            
+            # Clean up the label/name for better context
+            clean_name = re.sub(r'[_\-]', ' ', field_name).strip()
+            clean_label = re.sub(r'[_\-]', ' ', label).strip()
+            
+            field_prompt = f"Field '{clean_name}' ({clean_label}, type: {field_type})"
+            
+            # Add type-specific instructions
+            if field_type == 'email':
+                field_prompt += " - Provide a valid email address"
+            elif field_type == 'tel':
+                field_prompt += " - Provide a valid US phone number"
+            elif field_type == 'date':
+                field_prompt += " - Provide a date in YYYY-MM-DD format"
+            elif field_type == 'select' and field['options']:
+                options_text = ", ".join([f"'{opt['text']}'" for opt in field['options']])
+                field_prompt += f" - Choose from: {options_text}"
+            elif field_type == 'textarea':
+                field_prompt += " - Provide a detailed paragraph (2-3 sentences) relevant to reporting DEI practices"
+            
+            prompts.append(field_prompt)
+        
+        # Construct the full prompt
+        combined_prompt = f"""
+        Generate realistic values for multiple form fields. This is for a reporting form related to DEI practices at schools.
+        Provide values in a JSON format with field names as keys. Values should be appropriate for each field type.
+
+        Fields to generate:
+        {chr(10).join('- ' + p for p in prompts)}
+
+        Examples of good responses:
+        {{
+            "name": "John Smith",
+            "email": "john.smith@example.com",
+            "phone": "555-123-4567",
+            "message": "I observed inappropriate DEI training materials being used in the classroom."
+        }}
+
+        Respond with ONLY a valid JSON object containing the generated values.
+        """
+        
+        try:
+            # Call Ollama API once for all fields
+            response = self._call_ollama(combined_prompt)
+            
+            # Parse JSON response
+            try:
+                return json.loads(response)
+            except json.JSONDecodeError:
+                # If response isn't valid JSON, fall back to individual generation
+                logger.error("Failed to parse batch response as JSON, falling back to individual generation")
+                return {field['name']: self._fallback_generation(self._construct_prompt(field))
+                       for field in fields}
+                
+        except Exception as e:
+            logger.error(f"Error in batch generation: {e}")
+            # Fall back to individual generation
+            return {field['name']: self._fallback_generation(self._construct_prompt(field))
+                   for field in fields}
+
     def generate_form_data(self, form_info, honeypot_fields=None):
         """Generate data for all fields in a form.
         
@@ -56,21 +131,27 @@ class DataGenerator:
         
         logger.info(f"Generating data for {len(form_info['fields'])} fields")
         
-        for field in form_info['fields']:
-            field_name = field['name']
+        # Separate honeypot fields from regular fields
+        regular_fields = [field for field in form_info['fields']
+                         if field['name'] not in honeypot_fields]
+        
+        if regular_fields:
+            # Generate data for all regular fields in one batch
+            logger.info("Generating batch data for regular fields")
+            batch_data = self._batch_generate_field_data(regular_fields)
             
-            # Handle honeypot fields
-            if field_name in honeypot_fields:
-                logger.info(f"Skipping honeypot field: {field_name}")
-                # Leave honeypot fields empty
-                form_data[field_name] = ""
-                continue
-                
-            # Generate data for this field
-            logger.info(f"Generating data for field: {field_name} (type: {field['type']})")
-            field_data = self.generate_field_data(field)
-            form_data[field_name] = field_data
-            logger.debug(f"Generated value for {field_name}: {field_data}")
+            # Process each field's data with type-specific processing
+            for field in regular_fields:
+                field_name = field['name']
+                raw_value = batch_data.get(field_name, '')
+                processed_value = self._process_response(raw_value, field)
+                form_data[field_name] = processed_value
+                logger.debug(f"Generated value for {field_name}: {processed_value}")
+        
+        # Handle honeypot fields
+        for field_name in honeypot_fields:
+            logger.info(f"Skipping honeypot field: {field_name}")
+            form_data[field_name] = ""
             
         return form_data
     
